@@ -1,12 +1,15 @@
 import os
 import json
+from typing import Type, TypeVar
+from functools import cached_property
 
 import pygsheets
+import instructor
 import pandas as pd
-import simplemind as sm
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from rich.console import Console
+from simplemind.providers.openai import OpenAI
 
 load_dotenv()
 console = Console()
@@ -35,6 +38,8 @@ Output format should be JSON with the following keys:
  - category: The category the text belongs to, and it should be lowercase.
 """
 
+T = TypeVar("T", bound=BaseModel)
+
 
 class DrivelologyResponseModel(BaseModel):
 
@@ -42,8 +47,96 @@ class DrivelologyResponseModel(BaseModel):
     category: str
 
 
+class OpenRouter(OpenAI):
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key
+
+    @cached_property
+    def client(self):
+        if not self.api_key:
+            raise ValueError("OpenAI API key is required")
+        try:
+            import openai as oa
+        except ImportError as exc:
+            raise ImportError(
+                "Please install the `openai` package: `pip install openai`"
+            ) from exc
+        return oa.OpenAI(
+            api_key=self.api_key, 
+            base_url="https://openrouter.ai/api/v1"
+        )
+
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        llm_model: str | None = None,
+        **kwargs,
+    ):
+        """Generate text using the OpenAI API."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        ]
+
+        response = self.client.chat.completions.create(
+            messages=messages,
+            model=llm_model or self.DEFAULT_MODEL,
+            **{**self.DEFAULT_KWARGS, **kwargs},
+        )
+        return response.choices[0].message.content
+    
+    @cached_property
+    def structured_client(self) -> instructor.Instructor:
+        """A client patched with Instructor."""
+        return instructor.from_openai(
+            self.client,
+            mode=instructor.Mode.JSON,
+        )
+    
+    def structured_response(
+        self,
+        prompt: str,
+        response_model: Type[T],
+        *,
+        llm_model: str | None = None,
+        **kwargs,
+    ) -> T:
+        """Get a structured response from the OpenAI API."""
+        # Ensure messages are provided in kwargs
+        messages = [
+            {"role": "user", "content": prompt},
+        ]
+
+        response = self.structured_client.chat.completions.create(
+            messages=messages,
+            model=llm_model or self.DEFAULT_MODEL,
+            response_model=response_model,
+            **{**self.DEFAULT_KWARGS, **kwargs},
+        )
+        return response_model.model_validate(response)
+    
+    def generate_data(
+        self, 
+        prompt: str,
+        *,
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
+        response_model: Type[BaseModel],
+        **kwargs,
+    ) -> BaseModel:
+        """Generate structured data using the session's default provider and model."""
+        return self.structured_response(
+            prompt=prompt,
+            llm_model=llm_model,
+            response_model=response_model,
+            **kwargs,
+        )
+
+
 def main():
-    save_file = 'gpt_4o_mini.tsv'
+    save_file = 'deepseek_v3.tsv'
+    llm_model = 'deepseek/deepseek-chat-v3-0324:free'
     service_file = 'drivelology-1b65510988e8.json'
     
     save_file = os.path.join('data', save_file)
@@ -65,9 +158,8 @@ def main():
                 id, text, created_datetime, modified_datetime, reason, category = line.strip().split('\t')
                 exist_ids.add(id)
 
-    llm = sm.Session(
-        llm_provider="openai", 
-        llm_model="gpt-4o-mini", 
+    llm = OpenRouter(
+        api_key=os.getenv('OPENROUTER_API_KEY')
     )
 
     for index, row in worksheet_df.iterrows():
@@ -82,7 +174,8 @@ def main():
             continue
 
         response = llm.generate_data(
-            prompt=PROMPT_TEMPLATE.format(text=text),
+            prompt=PROMPT_TEMPLATE.format(text=text), 
+            llm_model=llm_model, 
             response_model=DrivelologyResponseModel,
         )
 
