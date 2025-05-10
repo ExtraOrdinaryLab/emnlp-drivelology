@@ -136,8 +136,8 @@ class OpenRouter(OpenAI):
 
 
 def main():
-    save_file = 'mai_ds_r1.tsv'
-    llm_model = 'microsoft/mai-ds-r1:free'
+    save_file = 'qwen3_235b.tsv'
+    llm_model = 'qwen/qwen3-235b-a22b:free'
     service_file = 'drivelology-1b65510988e8.json'
     
     save_file = os.path.join('data', save_file)
